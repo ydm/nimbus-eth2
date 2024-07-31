@@ -288,6 +288,52 @@ proc installBeaconApiHandlers*(router: var RestRouter, node: BeaconNode) =
           indexset.incl(item.get())
     ok(indexset.toSeq())
 
+  proc getValidatorsDiff(
+         node: BeaconNode,
+         a: BlockSlotId,
+         b: BlockSlotId,
+         validatorsMask: ValidatorFilter,
+         validatorIds: openArray[ValidatorIdent]
+       ): RestApiResponse =
+    var
+      xs: HashList[Validator, Limit VALIDATOR_REGISTRY_LIMIT]
+      # xb: HashList[Gwei, Limit VALIDATOR_REGISTRY_LIMIT]
+      # xe: Epoch
+    node.withStateForBlockSlotId(a):
+      xs = getStateField(state, validators)
+      # xb = getStateField(state, balances)
+      # xe = getStateField(state, slot).epoch()
+    node.withStateForBlockSlotId(b):
+      let
+        ys = getStateField(state, validators)
+        yb = getStateField(state, balances)
+        ye = getStateField(state, slot).epoch()
+      var res: seq[RestValidator]
+      for index, y in ys:
+        var differs = index >= len(xs)
+        if not differs:
+          let
+            x = xs.item(index)
+            # xstatus = x.getStatus(xe).valueOr:
+            #   return RestApiResponse.jsonError(Http400, ValidatorStatusNotFoundError, $error)
+            # ystatus = y.getStatus(ye).valueOr:
+            #   return RestApiResponse.jsonError(Http400, ValidatorStatusNotFoundError, $error)
+            # xbalance = xb.item(index)
+            # ybalance = yb.item(index)
+          differs = (x != y)
+        if differs:
+          let
+            balance = yb.item(index)
+            status = y.getStatus(ye).valueOr:
+              return RestApiResponse.jsonError(Http400, ValidatorStatusNotFoundError, $error)
+          res.add(RestValidator.init(ValidatorIndex(index), balance, toString(status), y))
+      return RestApiResponse.jsonResponseFinalized(
+        res,
+        node.getStateOptimistic(state),
+        node.dag.isFinalized(b.bid)
+      )
+    RestApiResponse.jsonError(Http404, StateNotFoundError)
+
   proc getValidators(
          node: BeaconNode,
          bslot: BlockSlotId,
@@ -408,6 +454,43 @@ proc installBeaconApiHandlers*(router: var RestRouter, node: BeaconNode) =
             return RestApiResponse.jsonError(
               Http400, InvalidValidatorStatusValueError, $error)
     getValidators(node, bslot, validatorsMask, validatorIds)
+
+  router.api2(MethodGet, "/custom/eth/v1/beacon/diff/{state_id}/validators") do (
+    state_id: StateIdent, id: seq[ValidatorIdent],
+    status: seq[ValidatorFilter]) -> RestApiResponse:
+    let
+      sid = state_id.valueOr:
+        return RestApiResponse.jsonError(Http400, InvalidStateIdValueError,
+                                         $error)
+      bslot = node.getBlockSlotId(sid).valueOr:
+        if sid.kind == StateQueryKind.Root:
+          # TODO (cheatfate): Its impossible to retrieve state by `state_root`
+          # in current version of database.
+          return RestApiResponse.jsonError(Http500, NoImplementationError)
+        return RestApiResponse.jsonError(
+          Http404, StateNotFoundError, $error)
+      validatorIds =
+        block:
+          if id.isErr():
+            return RestApiResponse.jsonError(
+              Http400, InvalidValidatorIdValueError)
+          let ires = id.get()
+          if len(ires) > ServerMaximumValidatorIds:
+            return RestApiResponse.jsonError(
+              Http414, MaximumNumberOfValidatorIdsError)
+          ires
+      validatorsMask =
+        block:
+          if status.isErr():
+            return RestApiResponse.jsonError(Http400,
+                                             InvalidValidatorStatusValueError)
+          validateFilter(status.get()).valueOr:
+            return RestApiResponse.jsonError(
+              Http400, InvalidValidatorStatusValueError, $error)
+    let ident = StateIdent(kind: StateQueryKind.Slot, slot: Slot(bslot.slot.uint64 - 1))
+    let bprev = node.getBlockSlotId(ident).valueOr:
+      return RestApiResponse.jsonError(Http400, InvalidStateIdValueError, $error)
+    getValidatorsDiff(node, bprev, bslot, validatorsMask, validatorIds)
 
   # https://ethereum.github.io/beacon-APIs/#/Beacon/postStateValidators
   router.metricsApi2(
