@@ -295,36 +295,24 @@ proc installBeaconApiHandlers*(router: var RestRouter, node: BeaconNode) =
          validatorsMask: ValidatorFilter,
          validatorIds: openArray[ValidatorIdent]
        ): RestApiResponse =
-    var
-      xs: HashList[Validator, Limit VALIDATOR_REGISTRY_LIMIT]
-      # xb: HashList[Gwei, Limit VALIDATOR_REGISTRY_LIMIT]
-      # xe: Epoch
+    var xs: HashList[Validator, Limit VALIDATOR_REGISTRY_LIMIT]
     node.withStateForBlockSlotId(a):
       xs = getStateField(state, validators)
-      # xb = getStateField(state, balances)
-      # xe = getStateField(state, slot).epoch()
     node.withStateForBlockSlotId(b):
       let
         ys = getStateField(state, validators)
-        yb = getStateField(state, balances)
-        ye = getStateField(state, slot).epoch()
+        balances = getStateField(state, balances)
+        epoch = getStateField(state, slot).epoch()
       var res: seq[RestValidator]
       for index, y in ys:
-        var differs = index >= len(xs)
+        var differs = (index >= len(xs))
         if not differs:
-          let
-            x = xs.item(index)
-            # xstatus = x.getStatus(xe).valueOr:
-            #   return RestApiResponse.jsonError(Http400, ValidatorStatusNotFoundError, $error)
-            # ystatus = y.getStatus(ye).valueOr:
-            #   return RestApiResponse.jsonError(Http400, ValidatorStatusNotFoundError, $error)
-            # xbalance = xb.item(index)
-            # ybalance = yb.item(index)
+          let x = xs.item(index)
           differs = (x != y)
         if differs:
           let
-            balance = yb.item(index)
-            status = y.getStatus(ye).valueOr:
+            balance = balances.item(index)
+            status = y.getStatus(epoch).valueOr:
               return RestApiResponse.jsonError(Http400, ValidatorStatusNotFoundError, $error)
           res.add(RestValidator.init(ValidatorIndex(index), balance, toString(status), y))
       return RestApiResponse.jsonResponseFinalized(
@@ -482,8 +470,7 @@ proc installBeaconApiHandlers*(router: var RestRouter, node: BeaconNode) =
       validatorsMask =
         block:
           if status.isErr():
-            return RestApiResponse.jsonError(Http400,
-                                             InvalidValidatorStatusValueError)
+            return RestApiResponse.jsonError(Http400, InvalidValidatorStatusValueError)
           validateFilter(status.get()).valueOr:
             return RestApiResponse.jsonError(
               Http400, InvalidValidatorStatusValueError, $error)
