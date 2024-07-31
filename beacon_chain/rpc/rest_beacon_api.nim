@@ -448,8 +448,7 @@ proc installBeaconApiHandlers*(router: var RestRouter, node: BeaconNode) =
     status: seq[ValidatorFilter]) -> RestApiResponse:
     let
       sid = state_id.valueOr:
-        return RestApiResponse.jsonError(Http400, InvalidStateIdValueError,
-                                         $error)
+        return RestApiResponse.jsonError(Http400, InvalidStateIdValueError, $error)
       bslot = node.getBlockSlotId(sid).valueOr:
         if sid.kind == StateQueryKind.Root:
           # TODO (cheatfate): Its impossible to retrieve state by `state_root`
@@ -474,9 +473,14 @@ proc installBeaconApiHandlers*(router: var RestRouter, node: BeaconNode) =
           validateFilter(status.get()).valueOr:
             return RestApiResponse.jsonError(
               Http400, InvalidValidatorStatusValueError, $error)
-    let ident = StateIdent(kind: StateQueryKind.Slot, slot: Slot(bslot.slot.uint64 - 1))
-    let bprev = node.getBlockSlotId(ident).valueOr:
-      return RestApiResponse.jsonError(Http400, InvalidStateIdValueError, $error)
+    var bprev: BlockSlotId = bslot
+    while true:
+      let
+        ident = StateIdent(kind: StateQueryKind.Slot, slot: Slot(bprev.slot.uint64 - 1))
+        maybe = node.getBlockSlotId(ident)
+      if maybe.isOk():
+        bprev = maybe.value()
+        break
     getValidatorsDiff(node, bprev, bslot, validatorsMask, validatorIds)
 
   # https://ethereum.github.io/beacon-APIs/#/Beacon/postStateValidators
